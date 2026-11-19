@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>本地账本 · Bastide Personal</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <section id="auth" class="auth-layout">
+      <div class="auth-intro">
+        <div class="brand">
+          <span class="brand-mark">本</span> 本地账本
+          <span class="muted">/ Bastide Personal</span>
+        </div>
+        <div class="auth-copy">
+          <span class="eyebrow">账目在本机，心里有底</span>
+          <h1>把生活记下来。<br />把数据留给自己。</h1>
+          <p>
+            记账、整理、分析，都在你的电脑上完成。<br />让智能体帮忙，而不是把整个账本交给它。
+          </p>
+          <div class="auth-features">
+            <div>
+              <span>01</span><strong>本地加密</strong
+              ><small>AES-256-GCM 加密文件，密码由你掌握</small>
+            </div>
+            <div>
+              <span>02</span><strong>自由统计</strong
+              ><small>Python 本地计算，只分享你需要的结果</small>
+            </div>
+            <div>
+              <span>03</span><strong>随时迁移</strong
+              ><small>加密备份带走账本，不依赖云端账户</small>
+            </div>
+          </div>
+        </div>
+        <footer>基于 Bastide 开源项目扩展 · 无遥测 · 无云端账本</footer>
+      </div>
+      <div class="auth-form-wrap">
+        <div class="auth-form-inner">
+          <span class="lock-symbol" aria-hidden="true">◇</span>
+          <h2 id="auth-title">正在检查账本…</h2>
+          <p id="auth-subtitle" class="muted">你的数据只属于你。</p>
+          <form id="auth-form">
+            <label
+              ><span id="credential-label">主密码</span
+              ><input
+                id="credential"
+                type="password"
+                autocomplete="current-password"
+                maxlength="1024"
+                required
+            /></label>
+            <label id="confirm-wrap" hidden
+              >确认主密码<input
+                id="password-confirm"
+                type="password"
+                autocomplete="new-password"
+            /></label>
+            <label id="recovery-wrap" class="check" hidden
+              ><input id="recovery-mode" type="checkbox" />
+              使用离线恢复密钥</label
+            >
+            <p id="auth-error" class="error" role="alert"></p>
+            <button
+              id="auth-submit"
+              class="primary large full"
+              type="submit"
+              disabled
+            >
+              请稍候
+            </button>
+          </form>
+          <p class="small muted">
+            15 分钟无界面操作自动锁定。密码不会发送给 Workbuddy。
+          </p>
+          <details class="restore-box">
+            <summary>从加密备份恢复账本</summary>
+            <p class="small muted">
+              原有账本会先保留一份加密副本。恢复后仍需解锁。
+            </p>
+            <form id="restore-form">
+              <label
+                >加密备份（.bfin）<input
+                  id="restore-file"
+                  type="file"
+                  accept=".bfin"
+                  required /></label
+              ><label
+                >该备份的主密码 / 恢复密钥<input
+                  id="restore-credential"
+                  type="password"
+                  required
+                  maxlength="1024" /></label
+              ><label class="check"
+                ><input id="restore-recovery" type="checkbox" />
+                使用恢复密钥</label
+              ><button type="submit" class="full">验证并恢复备份</button>
+            </form>
+          </details>
+        </div>
+      </div>
+    </section>
+    <div id="workspace" class="workspace" hidden>
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">本</span> 本地账本</div>
+        <div class="edition">Bastide · 个人版</div>
+        <nav aria-label="主导航">
+          <div class="nav-label">我的财务</div>
+          <button class="nav-item active" data-page="dashboard">
+            <span data-icon="dashboard"></span>财务总览
+          </button>
+          <button class="nav-item" data-page="transactions">
+            <span data-icon="transactions"></span>交易记录
+          </button>
+          <button class="nav-item" data-page="accounts">
+            <span data-icon="wallet"></span>我的账户
+          </button>
+          <button class="nav-item" data-page="reports">
+            <span data-icon="chart"></span>数据分析
+          </button>
+          <div class="nav-label">整理与管理</div>
+          <button class="nav-item" data-page="categories">
+            <span data-icon="tags"></span>分类与规则
+          </button>
+          <button class="nav-item" data-page="imports">
+            <span data-icon="download"></span>账单导入
+          </button>
+          <button class="nav-item" data-page="history">
+            <span data-icon="history"></span>操作历史
+          </button>
+        </nav>
+        <div class="sidebar-spacer"></div>
+        <button class="nav-item" data-page="settings">
+          <span data-icon="settings"></span>安全与智能体
+        </button>
+        <div class="sidebar-footer">
+          <div><span class="status-dot"></span> 数据仅存储在本机</div>
+          <small>已解锁 · CNY 人民币账本</small>
+        </div>
+      </aside>
+      <div class="main-wrap">
+        <header class="topbar">
+          <div class="breadcrumb">
+            我的账本 <span>/</span> <strong id="page-title">财务总览</strong>
+          </div>
+          <div class="toolbar">
+            <button
+              id="theme-toggle"
+              class="ghost"
+              title="切换明暗主题"
+              aria-label="切换明暗主题"
+            >
+              <span data-icon="sun"></span></button
+            ><button id="lock-button"><span data-icon="lock"></span>锁定</button
+            ><button id="add-entry" class="primary">
+              <span data-icon="plus"></span>记一笔
+            </button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1">
+          <section id="page-dashboard" class="page">
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">你的财务，一目了然</p>
+                <h1>财务总览</h1>
+              </div>
+              <label class="inline-label"
+                >统计月份 <input id="dashboard-month" type="month"
+              /></label>
+            </div>
+            <div id="summary-metrics" class="metrics"></div>
+            <div class="split-section">
+              <section>
+                <div class="section-heading">
+                  <h2>收支趋势</h2>
+                  <span class="small muted">按实际交易日期统计</span>
+                </div>
+                <div
+                  id="dashboard-chart"
+                  class="chart"
+                  role="img"
+                  aria-label="月度收入与支出趋势"
+                ></div>
+              </section>
+              <section>
+                <div class="section-heading">
+                  <h2>支出去向</h2>
+                  <span class="small muted">按一级分类汇总</span>
+                </div>
+                <div id="category-chart"></div>
+              </section>
+            </div>
+            <section class="section">
+              <div class="section-heading">
+                <h2>最近交易</h2>
+                <button class="ghost link" data-page="transactions">
+                  查看全部 →
+                </button>
+              </div>
+              <div id="recent-transactions"></div>
+            </section>
+            <div class="privacy-note">
+              <span data-icon="shield"></span
+              ><span
+                >账本保存在本机。转账不计入收入和支出，统计由本地 Python
+                完成。</span
+              >
+            </div>
+          </section>
+          <section id="page-transactions" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">每一笔都有迹可循</p>
+                <h1>交易记录</h1>
+              </div>
+              <span id="transactions-count" class="muted"></span>
+            </div>
+            <form id="transaction-filter" class="filter-bar">
+              <input
+                id="filter-q"
+                type="search"
+                placeholder="搜索商家、备注"
+                aria-label="搜索商家、备注"
+              /><select id="filter-account" aria-label="筛选账户"></select
+              ><select id="filter-category" aria-label="筛选分类"></select
+              ><input
+                id="filter-start"
+                type="date"
+                aria-label="开始日期"
+              /><span class="muted">至</span
+              ><input
+                id="filter-end"
+                type="date"
+                aria-label="结束日期"
+              /><button type="submit">筛选</button
+              ><button id="clear-filters" type="button" class="ghost">
+                清除
+              </button>
+            </form>
+            <div id="transactions-table"></div>
+            <div id="pagination" class="pagination"></div>
+          </section>
+          <section id="page-accounts" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">钱在哪里，清清楚楚</p>
+                <h1>我的账户</h1>
+              </div>
+              <button id="new-account">新增账户</button>
+            </div>
+            <p class="muted">
+              余额 = 期初余额 + 该账户全部交易。微信、支付宝作为独立账户管理。
+            </p>
+            <div id="accounts-list"></div>
+          </section>
+          <section id="page-categories" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">让历史账目重新有序</p>
+                <h1>分类与规则</h1>
+              </div>
+              <button id="new-category">新增分类</button>
+            </div>
+            <div class="split-section">
+              <section>
+                <div class="section-heading">
+                  <h2>我的分类</h2>
+                  <span class="small muted">一级 + 二级</span>
+                </div>
+                <div id="category-list"></div>
+              </section>
+              <section>
+                <h2>批量整理历史分类</h2>
+                <p class="muted">
+                  先预览影响笔数，再确认迁移。每次调整都可以在操作历史中撤销。
+                </p>
+                <form id="bulk-form">
+                  <label
+                    >原分类<select id="bulk-source" required></select></label
+                  ><label
+                    >目标分类<select id="bulk-target" required></select></label
+                  ><button type="submit">预览调整</button>
+                </form>
+                <div id="bulk-preview" class="notice" hidden></div>
+              </section>
+            </div>
+            <section class="section">
+              <div class="section-heading">
+                <div>
+                  <h2>自动分类规则</h2>
+                  <p class="small muted">
+                    匹配商家或备注中的关键词。你手动选择的分类优先。
+                  </p>
+                </div>
+                <button id="new-rule">新增规则</button>
+              </div>
+              <div id="rules-list"></div>
+            </section>
+          </section>
+          <section id="page-reports" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">用数据，理解自己的生活</p>
+                <h1>数据分析</h1>
+              </div>
+              <span class="pill">本地 Python 计算</span>
+            </div>
+            <form id="report-filter" class="filter-bar">
+              <label
+                >开始日期<input id="report-start" type="date" required /></label
+              ><label
+                >结束日期<input id="report-end" type="date" required /></label
+              ><label>分类<select id="report-category"></select></label
+              ><button type="submit">更新分析</button>
+            </form>
+            <div id="report-metrics" class="metrics"></div>
+            <section>
+              <div class="section-heading">
+                <h2>月度收支</h2>
+                <div class="legend">
+                  <span class="income-dot"></span>收入
+                  <span class="expense-dot"></span>支出
+                </div>
+              </div>
+              <div id="report-chart" class="chart"></div>
+            </section>
+            <div class="split-section section">
+              <section>
+                <h2>分类支出排行</h2>
+                <div id="report-categories"></div>
+              </section>
+              <section>
+                <h2>商家消费排行</h2>
+                <div id="report-merchants"></div>
+              </section>
+            </div>
+            <section class="section">
+              <h2>同比分析</h2>
+              <div id="report-yoy" class="notice"></div>
+            </section>
+          </section>
+          <section id="page-imports" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">把过去的记录，带回自己手里</p>
+                <h1>账单导入</h1>
+              </div>
+              <button id="download-template">下载 CSV 模板</button>
+            </div>
+            <div class="notice">
+              支持微信、支付宝和 MMEX 导出的 CSV；支持 UTF-8 /
+              GB18030。文件仅在本机解析，预览确认后才入账。
+            </div>
+            <form id="import-form" class="import-form">
+              <label
+                >导入到账户<select id="import-account" required></select></label
+              ><label
+                >账单格式<select id="import-format">
+                  <option value="auto">自动识别</option>
+                  <option value="wechat">微信支付</option>
+                  <option value="alipay">支付宝</option>
+                  <option value="mmex">Money Manager Ex / MMEX</option>
+                  <option value="csv">通用 CSV 模板</option>
+                </select></label
+              ><label class="dropzone"
+                ><span data-icon="download"></span
+                ><strong>选择本地 CSV 账单</strong
+                ><span class="small muted"
+                  >最大 2 MiB，一次最多 5000 行 · 不支持 XLSX</span
+                ><input
+                  id="import-file"
+                  type="file"
+                  accept=".csv"
+                  required /></label
+              ><button class="primary" type="submit">解析并预览</button>
+            </form>
+            <div id="import-result" hidden></div>
+          </section>
+          <section id="page-history" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">修改可追溯，整理可回退</p>
+                <h1>操作历史</h1>
+              </div>
+              <span class="small muted">最近 100 次账目操作</span>
+            </div>
+            <p class="muted">
+              撤销前会检查账目是否又被修改，避免覆盖后续记录。转账的两端会一起撤销。
+            </p>
+            <div id="history-list"></div>
+          </section>
+          <section id="page-settings" class="page" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">你决定数据如何被使用</p>
+                <h1>安全与智能体</h1>
+              </div>
+              <span class="pill">仅监听 127.0.0.1</span>
+            </div>
+            <section class="settings-row">
+              <div>
+                <h2>加密备份</h2>
+                <p class="muted">
+                  下载一致的加密账本，可放入坚果云。恢复使用备份时的密码或离线恢复密钥。
+                </p>
+                <p class="small muted">
+                  请同步备份文件，避免多个设备同时写同一份活动账本。
+                </p>
+              </div>
+              <a class="button" href="/api/backup" download>下载加密备份</a>
+            </section>
+            <section class="settings-row">
+              <div>
+                <h2>修改主密码</h2>
+                <p class="muted">
+                  不会改变恢复密钥，也不会重新加密以前下载的备份。
+                </p>
+              </div>
+              <button id="change-password">修改密码</button>
+            </section>
+            <section class="settings-row">
+              <div>
+                <h2>Workbuddy / MCP 接入</h2>
+                <p class="muted">
+                  在本机界面解锁后，智能体才可调用工具。统计在 Python
+                  内完成，默认不开放逐笔账单读取。
+                </p>
+                <label class="check"
+                  ><input id="agent-writes" type="checkbox" checked />
+                  允许新增、修改交易与批量分类</label
+                ><label class="check"
+                  ><input id="agent-details" type="checkbox" />
+                  额外允许读取逐笔账目（内容可能进入智能体上下文）</label
+                >
+                <div class="toolbar spaced">
+                  <button id="generate-agent">生成 / 轮换 MCP 令牌</button
+                  ><button id="revoke-agent" class="danger">
+                    撤销 Agent 访问
+                  </button>
+                </div>
+                <div id="agent-config" hidden>
+                  <p class="small warning">
+                    此配置含访问令牌，请仅保存在本机的 Workbuddy
+                    配置中，不要提交到 GitHub。
+                  </p>
+                  <textarea
+                    id="agent-config-text"
+                    rows="12"
+                    readonly
+                    aria-label="MCP 配置"
+                  ></textarea
+                  ><button id="copy-config">复制 MCP 配置</button>
+                </div>
+              </div>
+            </section>
+            <section class="settings-row">
+              <div>
+                <h2>明文导出</h2>
+                <p class="muted">
+                  用于自行编写 Python
+                  脚本或迁出数据。导出内容未加密，请妥善保管。
+                </p>
+              </div>
+              <button id="export-plaintext" class="danger">
+                导出 JSON 明文
+              </button>
+            </section>
+            <section class="section">
+              <h2>关于这个版本</h2>
+              <p class="muted">
+                基于 Bastide 的 Python
+                后端扩展，共用其账户、分类、交易模型与余额逻辑。个人模式使用独立的加密账本，不会修改原版账本。
+              </p>
+              <p class="small muted">
+                人民币单币种 · 内存 SQLite + Argon2id / AES-256-GCM · 15
+                分钟无界面操作自动锁定 · 账本上限 128 MiB
+              </p>
+            </section>
+          </section>
+        </main>
+        <footer class="app-footer">
+          <span><span class="status-dot"></span> 本地运行，数据加密保存</span
+          ><span id="footer-date"></span>
+        </footer>
+      </div>
+    </div>
+    <dialog id="entry-dialog">
+      <form id="entry-form">
+        <div class="dialog-heading">
+          <h2 id="entry-title">记一笔</h2>
+          <button type="button" class="ghost" data-close aria-label="关闭">
+            ✕
+          </button>
+        </div>
+        <input id="entry-id" type="hidden" /><input
+          id="entry-request"
+          type="hidden"
+        />
+        <div class="form-grid">
+          <label
+            >类型<select id="entry-kind">
+              <option value="expense">支出</option>
+              <option value="income">收入</option>
+              <option value="transfer">转账</option>
+            </select></label
+          ><label
+            >金额（元）<input
+              id="entry-amount"
+              inputmode="decimal"
+              placeholder="0.00"
+              required
+              maxlength="16" /></label
+          ><label
+            >实际交易日期<input id="entry-date" type="date" required /></label
+          ><label id="entry-account-label"
+            >账户<select id="entry-account" required></select></label
+          ><label id="entry-category-wrap"
+            >分类<select id="entry-category"></select></label
+          ><label id="entry-destination-wrap" hidden
+            >转入账户<select id="entry-destination"></select></label
+          ><label
+            >商家<input
+              id="entry-merchant"
+              maxlength="200"
+              placeholder="例如：附近的早餐店" /></label
+          ><label class="full-span"
+            >备注<textarea
+              id="entry-note"
+              rows="2"
+              maxlength="2000"
+              placeholder="补充说明（选填）"
+            ></textarea>
+          </label>
+        </div>
+        <p class="small muted">
+          未指定分类时，将尝试使用本地规则；无法识别的账目保留为未分类。
+        </p>
+        <p id="entry-error" class="error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" data-close>取消</button
+          ><button type="submit" class="primary">保存账目</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="generic-dialog">
+      <div class="dialog-heading">
+        <h2 id="generic-title"></h2>
+        <button type="button" class="ghost" data-close aria-label="关闭">
+          ✕
+        </button>
+      </div>
+      <div id="generic-content"></div>
+    </dialog>
+  </body>
+</html>

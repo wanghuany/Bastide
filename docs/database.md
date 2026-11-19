@@ -163,6 +163,27 @@ erDiagram
         datetime created_at
         datetime updated_at
     }
+    personal_actions {
+        text id PK
+        text kind
+        json payload
+        bool undone
+        datetime created_at
+        text user_id FK
+    }
+    personal_drafts {
+        text id PK
+        text kind
+        json payload
+        datetime expires_at
+        bool consumed
+        text user_id FK
+    }
+    personal_settings {
+        text key PK
+        json value
+        text user_id FK
+    }
     properties {
         text id PK
         text user_id FK
@@ -312,6 +333,9 @@ erDiagram
     users ||--o{ mortgage_simulations : "user_id"
     properties |o--o{ mortgages : "property_id"
     users ||--o{ mortgages : "user_id"
+    users ||--o{ personal_actions : "user_id"
+    users ||--o{ personal_drafts : "user_id"
+    users ||--o{ personal_settings : "user_id"
     users ||--o{ properties : "user_id"
     accounts ||--o{ recurring_merchant_aliases : "account_id"
     recurring_series ||--o{ recurring_merchant_aliases : "series_id"

@@ -13,6 +13,7 @@ from app.features.goals import models as goals_models  # noqa: F401
 from app.features.imports import models as imports_models  # noqa: F401
 from app.features.mortgages import models as mortgages_models  # noqa: F401
 from app.features.networth import models as networth_models  # noqa: F401
+from app.features.personal import models as personal_models  # noqa: F401
 from app.features.properties import models as properties_models  # noqa: F401
 from app.features.recurring import models as recurring_models  # noqa: F401
 from app.features.rules import models as rules_models  # noqa: F401
@@ -70,6 +71,17 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # The personal edition decrypts into RAM and supplies its existing connection.
+    # Never create a plaintext intermediate database to run its migrations.
+    supplied_connection = config.attributes.get("connection")
+    if supplied_connection is not None:
+        context.configure(
+            connection=supplied_connection, target_metadata=target_metadata, render_as_batch=True
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

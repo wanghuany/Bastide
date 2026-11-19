@@ -15,6 +15,15 @@ Import your bank statements, see where your money goes, and keep your data on yo
 
 </div>
 
+## 中文个人模式 / Chinese personal edition
+
+This fork includes a separate local personal mode: Chinese UI, encrypted vault,
+manual bookkeeping, local Python reports, and Workbuddy-compatible stdio MCP tools.
+Run **`启动个人账本.cmd`** on Windows. See [中文使用说明](docs/personal.zh-CN.md).
+Project documents: [需求](docs/软件实现.md), [落地说明](docs/软件实现落地说明.md),
+[仓库使用说明](docs/仓库使用说明.md).
+The original Flutter application below remains available; the two modes use separate datastores.
+
 > [!IMPORTANT]
 > **Your data never leaves your computer.** There are no bank connections, no cloud account and
 > no telemetry. The backend listens on `127.0.0.1` only, and the optional AI runs on a local

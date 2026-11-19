@@ -72,3 +72,11 @@ Thumbs.db
 
 # Editor
 .history
+
+# Personal edition: private vaults, backups and machine-local MCP credentials.
+.personal-data/
+*.bfin
+*.bfin.*
+workbuddy.local.json
+personal.local.json
+.ruff_cache/

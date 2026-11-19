@@ -22,6 +22,12 @@ dependencies = [
 [project.scripts]
 bastide-backend = "app.cli:main"
 
+[project.optional-dependencies]
+personal = [
+    "cryptography>=50.0.2",
+    "mcp>=1,<2",
+]
+
 # The project is installed (editable) so `app.__version__` can read this version from the
 # package metadata instead of a second hand-kept copy.
 [build-system]
