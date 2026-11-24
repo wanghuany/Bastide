@@ -463,7 +463,7 @@ main {
 }
 .metrics {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  grid-template-columns: 1.4fr repeat(4, minmax(0, 1fr));
   gap: 24px;
   margin: 24px 0 36px;
   padding-bottom: 32px;
@@ -739,6 +739,20 @@ td .ghost {
   display: flex;
   align-items: center;
   gap: 14px;
+}
+.account-archive {
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+.account-archive summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 10px 0;
+}
+.account-row > .toolbar {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .account-monogram {
   width: 40px;

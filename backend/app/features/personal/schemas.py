@@ -29,12 +29,51 @@ class AccountInput(Input):
     name: str = Field(min_length=1, max_length=100)
     opening_balance_minor: StrictInt = Field(default=0, ge=-MAX_AMOUNT, le=MAX_AMOUNT)
     archived: bool = False
+    purpose: Literal["generic", "bond", "stock_allowance", "savings", "allowance"] | None = None
+    monthly_allowance_minor: StrictInt | None = Field(default=None, ge=0, le=MAX_AMOUNT)
+
+
+class AccountMoveInput(Input):
+    direction: Literal["up", "down"]
+
+
+class HoldingInput(Input):
+    name: str = Field(min_length=1, max_length=100)
+    opening_date: date
+    opening_value_minor: StrictInt = Field(default=0, ge=0, le=MAX_AMOUNT)
+    request_id: str = Field(min_length=8, max_length=100)
+
+
+class HoldingValue(Input):
+    holding_id: str = Field(min_length=1, max_length=36)
+    value_minor: StrictInt = Field(ge=0, le=MAX_AMOUNT)
+
+
+class ValuationInput(Input):
+    booked_date: date
+    holdings: list[HoldingValue] = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=8, max_length=100)
+
+
+class TradeInput(Input):
+    kind: Literal["buy", "sell"]
+    booked_date: date
+    amount_minor: StrictInt = Field(gt=0, le=MAX_AMOUNT)
+    request_id: str = Field(min_length=8, max_length=100)
+
+
+class SavingsTransferInput(Input):
+    destination_account_id: str = Field(min_length=1, max_length=36)
+    booked_date: date
+    amount_minor: StrictInt = Field(gt=0, le=MAX_AMOUNT)
+    request_id: str = Field(min_length=8, max_length=100)
 
 
 class CategoryInput(Input):
     name: str = Field(min_length=1, max_length=80)
     kind: Literal["expense", "income"] = "expense"
     parent_id: str | None = None
+    include_in_personal_expense: bool = True
 
 
 class EntryInput(Input):

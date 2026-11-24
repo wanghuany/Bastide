@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--category-id")
+    parser.add_argument("--expense-scope", choices=("all", "personal"), default="all")
     args = parser.parse_args()
     base = os.environ.get("BASTIDE_PERSONAL_URL", "http://127.0.0.1:8899").rstrip("/")
     parsed = urlparse(base)
@@ -45,8 +46,15 @@ def main() -> None:
         parser.error("Only a loopback HTTP API URL is permitted.")
     token = os.environ.get("BASTIDE_PERSONAL_TOKEN")
     if not token:
-        parser.error("Set BASTIDE_PERSONAL_TOKEN using the local app's generated MCP token.")
-    params = {"report": args.report, "start": args.start, "end": args.end}
+        parser.error(
+            "Set BASTIDE_PERSONAL_TOKEN using the local app's generated MCP token."
+        )
+    params = {
+        "report": args.report,
+        "start": args.start,
+        "end": args.end,
+        "expense_scope": args.expense_scope,
+    }
     if args.category_id:
         params["category_id"] = args.category_id
     request = Request(
@@ -54,10 +62,15 @@ def main() -> None:
         headers={"Authorization": "Bearer " + token},
     )
     try:
-        with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=60) as response:
+        with build_opener(ProxyHandler({}), NoRedirect()).open(
+            request, timeout=60
+        ) as response:
             print(json.dumps(json.load(response), ensure_ascii=False, indent=2))
     except HTTPError:
-        parser.exit(1, "Local report API rejected the request. Check the unlock state and token.\n")
+        parser.exit(
+            1,
+            "Local report API rejected the request. Check the unlock state and token.\n",
+        )
     except URLError:
         parser.exit(1, "Start and unlock the local app before running an analysis.\n")
 

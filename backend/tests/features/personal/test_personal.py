@@ -445,11 +445,106 @@ def test_mcp_tools_and_no_password_or_code_execution_tools(monkeypatch):
     assert call("GET", "/api/agent/catalog")["error"]["code"] == "INVALID_LOCAL_URL"
 
 
+def test_mcp_reports_missing_device_authorization(monkeypatch, tmp_path):
+    from app.features.personal.machine_access import MachineAccess
+    from app.personal_mcp import call
+
+    monkeypatch.setenv("BASTIDE_PERSONAL_URL", "http://127.0.0.1:19873")
+    monkeypatch.setenv("BASTIDE_PERSONAL_TOKEN", "fictional-test-token")
+    monkeypatch.setattr("app.personal_mcp.resolve_vault_path", lambda: tmp_path / "fictional.bfin")
+    monkeypatch.setattr(MachineAccess, "enabled", property(lambda self: False))
+    result = call("GET", "/api/agent/catalog")
+    assert result["error"]["code"] == "MACHINE_ACCESS_NOT_CONFIGURED"
+    assert "安全与智能体" in result["error"]["message"]
+
+
+def test_mcp_reports_hidden_service_start_failure(monkeypatch, tmp_path):
+    from app.features.personal.machine_access import MachineAccess
+    from app.personal_mcp import call
+
+    monkeypatch.setenv("BASTIDE_PERSONAL_URL", "http://127.0.0.1:19873")
+    monkeypatch.setenv("BASTIDE_PERSONAL_TOKEN", "fictional-test-token")
+    monkeypatch.setattr("app.personal_mcp.resolve_vault_path", lambda: tmp_path / "fictional.bfin")
+    monkeypatch.setattr(MachineAccess, "enabled", property(lambda self: True))
+    monkeypatch.setattr("app.personal_mcp.start_authorized_service", lambda base, vault: False)
+    result = call("GET", "/api/agent/catalog")
+    assert result["error"]["code"] == "LOCAL_SERVICE_START_FAILED"
+
+
 def test_export_requires_explicit_plaintext_confirmation(personal):
     assert personal.get("/api/export").status_code == 422
     value = personal.get("/api/export?confirm_plaintext=true")
     assert value.status_code == 200
     assert value.json()["format"] == "bastide-personal-export-v1"
+
+
+def test_family_support_and_personal_reports_preserve_cash_flow(personal):
+    create_entry(personal, kind="income", amount=100000, category_id=category(personal, "父母转入"))
+    create_entry(personal, amount=30000, category_id=category(personal, "给父母"))
+    create_entry(personal, amount=2000, category_id=category(personal, "早餐"))
+    create_entry(
+        personal, amount=9000, category_id=category(personal, "给父母"), booked_date="2025-11-17"
+    )
+    total = report(personal)
+    assert total["income_minor"] == 100000
+    assert total["expense_minor"] == 32000
+    assert total["personal_expense_minor"] == 2000
+    assert total["non_personal_expense_minor"] == 30000
+    assert total["net_minor"] == 68000
+    for report_name in (
+        "summary",
+        "monthly",
+        "annual",
+        "category_ranking",
+        "merchant_ranking",
+        "year_over_year",
+    ):
+        response = personal.get(
+            f"/api/analysis?{PERIOD}&report={report_name}&expense_scope=personal"
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["expense_scope"] == "personal"
+        if report_name in ("monthly", "annual"):
+            assert sum(x["expense_minor"] for x in result["items"]) == 2000
+        else:
+            assert result["expense_minor"] == 2000
+        if report_name == "year_over_year":
+            assert result["previous_expense_minor"] == 0
+    issued = personal.post("/api/agent-token", json={"allow_writes": False}).json()
+    response = personal.get(
+        f"/api/agent/analysis?{PERIOD}&report=summary&expense_scope=personal",
+        headers={"Authorization": "Bearer " + issued["token"]},
+    )
+    assert response.json()["expense_minor"] == 2000
+    assert personal.get(f"/api/analysis?{PERIOD}&expense_scope=invalid").status_code == 422
+
+
+def test_personal_category_flag_survives_rename_reopen_and_reclassification(personal):
+    family = next(x for x in personal.get("/api/categories").json() if x["name"] == "家庭支持")
+    child = next(x for x in personal.get("/api/categories").json() if x["name"] == "给父母")
+    assert child["personal_expense_included"] is False
+    created = create_entry(personal, amount=1200, category_id=child["id"])
+    response = personal.put(
+        "/api/categories/" + family["id"],
+        json={"name": "家人支持", "kind": "expense", "include_in_personal_expense": False},
+    )
+    assert response.status_code == 200
+    personal.post("/api/lock")
+    personal.post("/api/unlock", json={"credential": PASSWORD})
+    assert report(personal)["personal_expense_minor"] == 0
+    preview = personal.post(
+        "/api/categories/preview",
+        json={"source_category_id": child["id"], "target_category_id": category(personal, "早餐")},
+    ).json()
+    moved = personal.post(
+        "/api/categories/commit", json={"preview_id": preview["preview_id"]}
+    ).json()
+    assert report(personal)["personal_expense_minor"] == 1200
+    personal.post("/api/history/" + moved["action_id"] + "/undo")
+    assert report(personal)["personal_expense_minor"] == 0
+    personal.delete("/api/transactions/" + created["transaction_ids"][0])
+    assert report(personal)["expense_minor"] == 0
 
 
 def test_default_mode_remains_locked_on_startup(tmp_path):

@@ -17,7 +17,12 @@ from app.features.auth.models import User
 from app.features.categories.models import Category
 from app.features.imports.canonical import clean_description, compute_dedup_hash
 from app.features.imports.models import ImportBatch
-from app.features.personal.models import PersonalAction, PersonalDraft, PersonalSetting
+from app.features.personal.models import (
+    PersonalAction,
+    PersonalDraft,
+    PersonalHolding,
+    PersonalSetting,
+)
 from app.features.personal.schemas import AccountInput, CategoryInput, EntryInput, RuleInput
 from app.features.transactions.models import Transaction
 
@@ -57,6 +62,8 @@ class LedgerRepository:
 
     def bootstrap(self) -> None:
         if self.db.get(User, USER_ID) is not None:
+            self._family_categories()
+            self._account_plan()
             return
         self.db.add(
             User(
@@ -126,20 +133,141 @@ class LedgerRepository:
             )
         self.db.flush()
 
+        self._family_categories()
+        self._account_plan()
+
+    def _account_plan(self) -> None:
+        if self.setting("account_plan_v2"):
+            return
+        for name, purpose in (
+            ("支付宝债券账户", "bond"),
+            ("支付宝股票型基金零花钱账户", "stock_allowance"),
+            ("微信理财通账户", "savings"),
+            ("微信零花钱账户", "allowance"),
+        ):
+            existing = self.db.scalar(
+                select(Account).where(Account.user_id == USER_ID, Account.name == name)
+            )
+            if existing is None:
+                existing = Account(
+                    user_id=USER_ID,
+                    name=name,
+                    type="checking",
+                    institution="本地账本",
+                    currency="CNY",
+                    opening_balance_minor=0,
+                    cached_balance_minor=0,
+                )
+                self.db.add(existing)
+                self.db.flush()
+            if self.setting("account_profile:" + existing.id) is None:
+                self.set_setting(
+                    "account_profile:" + existing.id,
+                    {"purpose": purpose, "monthly_allowance_minor": 0},
+                )
+        self.set_setting("account_plan_v2", {"done": True})
+
+    def _family_categories(self) -> None:
+        if self.setting("family_categories_v1"):
+            return
+        for name, kind in (("家庭支持", "expense"), ("父母转入", "income")):
+            value = self.db.scalar(
+                select(Category).where(
+                    Category.user_id == USER_ID,
+                    Category.name == name,
+                    Category.kind == kind,
+                    Category.parent_id.is_(None),
+                )
+            )
+            if value is None:
+                value = Category(
+                    user_id=USER_ID,
+                    name=name,
+                    kind=kind,
+                    icon="tag",
+                    color="cat2" if kind == "expense" else "income",
+                    is_system=False,
+                )
+                self.db.add(value)
+                self.db.flush()
+            if kind == "expense":
+                self.set_setting("personal_expense:" + value.id, {"included": False})
+                child = self.db.scalar(
+                    select(Category).where(
+                        Category.user_id == USER_ID,
+                        Category.parent_id == value.id,
+                        Category.name == "给父母",
+                    )
+                )
+                if child is None:
+                    self.db.add(
+                        Category(
+                            user_id=USER_ID,
+                            parent_id=value.id,
+                            name="给父母",
+                            kind="expense",
+                            icon="tag",
+                            color="cat2",
+                            is_system=False,
+                        )
+                    )
+        self.set_setting("family_categories_v1", {"done": True})
+        self.db.flush()
+
     def accounts(self) -> list[dict]:
-        return [
+        holdings = {
+            account_id: amount
+            for account_id, amount in self.db.execute(
+                select(PersonalHolding.account_id, func.sum(PersonalHolding.current_value_minor))
+                .join(Account)
+                .where(Account.user_id == USER_ID)
+                .group_by(PersonalHolding.account_id)
+            ).all()
+        }
+        profiles = {
+            x.key.removeprefix("account_profile:"): x.value
+            for x in self.db.scalars(
+                select(PersonalSetting).where(
+                    PersonalSetting.user_id == USER_ID,
+                    PersonalSetting.key.startswith("account_profile:"),
+                )
+            )
+        }
+        result = [
             {
                 "id": x.id,
                 "name": x.name,
                 "currency": x.currency,
                 "opening_balance_minor": x.opening_balance_minor,
-                "balance_minor": x.cached_balance_minor,
+                "balance_minor": x.cached_balance_minor + holdings.get(x.id, 0),
+                "cash_balance_minor": x.cached_balance_minor,
+                "holdings_value_minor": holdings.get(x.id, 0),
+                "purpose": profiles.get(x.id, {}).get("purpose", "generic"),
+                "monthly_allowance_minor": profiles.get(x.id, {}).get("monthly_allowance_minor", 0),
                 "archived": x.archived,
             }
             for x in self.db.scalars(
                 select(Account).where(Account.user_id == USER_ID).order_by(Account.created_at)
             )
         ]
+
+        order = self.setting("account_order")
+        ranks = {value: index for index, value in enumerate(order.value["ids"])} if order else {}
+        return sorted(result, key=lambda a: (a["archived"], ranks.get(a["id"], len(ranks))))
+
+    def move_account(self, account_id: str, direction: str) -> list[dict]:
+        """Move within the active/archive group without touching balances or history."""
+        account = self.account(account_id)
+        accounts = self.accounts()
+        group = [a["id"] for a in accounts if a["archived"] == account.archived]
+        index = group.index(account_id)
+        neighbor = index + (-1 if direction == "up" else 1)
+        if 0 <= neighbor < len(group):
+            ids = [a["id"] for a in accounts]
+            left, right = ids.index(account_id), ids.index(group[neighbor])
+            ids[left], ids[right] = ids[right], ids[left]
+            self.set_setting("account_order", {"ids": ids})
+        return self.accounts()
 
     def account(self, account_id: str, active: bool = False) -> Account:
         value = self.db.scalar(
@@ -174,11 +302,37 @@ class LedgerRepository:
             value.name, value.archived = data.name, data.archived
             shift_opening_balance(self.db, value, data.opening_balance_minor)
         self.db.flush()
+        profile = self.setting("account_profile:" + value.id)
+        settings = (
+            dict(profile.value) if profile else {"purpose": "generic", "monthly_allowance_minor": 0}
+        )
+        if data.purpose is not None:
+            settings["purpose"] = data.purpose
+        if data.monthly_allowance_minor is not None:
+            settings["monthly_allowance_minor"] = data.monthly_allowance_minor
+        self.set_setting("account_profile:" + value.id, settings)
         return next(x for x in self.accounts() if x["id"] == value.id)
 
     def categories(self) -> list[dict]:
+        flags = {
+            x.key.removeprefix("personal_expense:"): x.value["included"]
+            for x in self.db.scalars(
+                select(PersonalSetting).where(
+                    PersonalSetting.user_id == USER_ID,
+                    PersonalSetting.key.startswith("personal_expense:"),
+                )
+            )
+        }
         return [
-            {"id": c.id, "parent_id": c.parent_id, "name": c.name, "kind": c.kind, "color": c.color}
+            {
+                "id": c.id,
+                "parent_id": c.parent_id,
+                "name": c.name,
+                "kind": c.kind,
+                "color": c.color,
+                "include_in_personal_expense": flags.get(c.id, True),
+                "personal_expense_included": flags.get(c.id, True) and flags.get(c.parent_id, True),
+            }
             for c in self.db.scalars(
                 select(Category)
                 .where(Category.user_id == USER_ID)
@@ -223,6 +377,9 @@ class LedgerRepository:
         value.name, value.kind, value.parent_id = data.name, data.kind, data.parent_id
         value.color = parent.color if parent else ("income" if data.kind == "income" else "cat2")
         self.db.flush()
+        self.set_setting(
+            "personal_expense:" + value.id, {"included": data.include_in_personal_expense}
+        )
         return next(x for x in self.categories() if x["id"] == value.id)
 
     def delete_category(self, category_id: str) -> None:
@@ -388,6 +545,11 @@ class LedgerRepository:
 
     def _insert(self, data: EntryInput) -> list[Transaction]:
         account = self.account(data.account_id, active=True)
+        profile = self.setting("account_profile:" + account.id)
+        if data.kind == "expense" and profile and profile.value.get("purpose") == "bond":
+            raise ValidationError(
+                "债券账户不记日常消费；买入/赎回请用账户详情，自有账户划转请用转账。"
+            )
         category_id, merchant = data.category_id, data.merchant
         if category_id and self.category(category_id).kind != data.kind:
             raise ValidationError("所选分类与收支类型不一致。")
@@ -445,6 +607,10 @@ class LedgerRepository:
     def update_entry(self, entry_id: str, data: EntryInput) -> dict:
         def operation() -> dict:
             old = self.group(entry_id)
+            if any(x.categorization_source == "investment" for x in old):
+                raise ValidationError(
+                    "基金现金流水请在账户详情的持仓历史中撤销，不能按普通收支修改。"
+                )
             before = [snapshot(row) for row in old]
             for row in old:
                 apply_delta(self.account(row.account_id), -row.amount_minor)
@@ -462,6 +628,8 @@ class LedgerRepository:
 
     def delete_entry(self, entry_id: str) -> dict:
         rows = self.group(entry_id)
+        if any(x.categorization_source == "investment" for x in rows):
+            raise ValidationError("基金现金流水请在账户详情的持仓历史中撤销。")
         before = [snapshot(row) for row in rows]
         for row in rows:
             apply_delta(self.account(row.account_id), -row.amount_minor)
@@ -531,7 +699,7 @@ class LedgerRepository:
             .join(Account)
             .where(
                 Account.user_id == USER_ID,
-                Transaction.categorization_source != "transfer",
+                Transaction.categorization_source.not_in(("transfer", "investment")),
                 Transaction.booked_date >= start,
                 Transaction.booked_date <= end,
             )

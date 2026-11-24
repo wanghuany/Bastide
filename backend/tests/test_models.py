@@ -40,6 +40,8 @@ EXPECTED_TABLES = {
     "personal_actions",
     "personal_drafts",
     "personal_settings",
+    "personal_holdings",
+    "personal_holding_events",
     "alembic_version",
 }
 

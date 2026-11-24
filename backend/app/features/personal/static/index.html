@@ -7,6 +7,8 @@
     <title>本地账本 · Bastide Personal</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/window.js" defer></script>
+    <script src="/static/portfolio.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
@@ -170,10 +172,11 @@
                 <h1>财务总览</h1>
               </div>
               <label class="inline-label"
-                >统计月份 <input id="dashboard-month" type="month"
+                >统计来源 <select id="dashboard-source"><option value="month">按月统计</option><option value="since-start">2026-07-15 起累计（含当天）</option></select> <input id="dashboard-month" type="month"
               /></label>
             </div>
             <div id="summary-metrics" class="metrics"></div>
+            <p id="dashboard-range-note" class="small muted"></p>
             <div class="split-section">
               <section>
                 <div class="section-heading">
@@ -195,6 +198,16 @@
                 <div id="category-chart"></div>
               </section>
             </div>
+            <section class="section" id="finance-portfolio-section">
+              <div class="section-heading"><h2>账户详情分析</h2><select id="finance-account" aria-label="选择分析账户"></select></div>
+              <div id="portfolio-metrics" class="metrics"></div>
+              <p id="portfolio-allowance" class="notice"></p>
+              <div class="toolbar"><button id="add-holding">登记期初基金</button><button id="record-values">记录本周基金金额</button><button id="save-allowance">零花钱结余转存</button></div>
+              <p class="small muted">总资产＝现金＋基金最新金额。期初现金不要重复包含基金；新买入/赎回请单独登记，再填本周金额。市值变化不计日常收入或消费，不需要填写百分比。</p>
+              <div id="holdings-list"></div>
+              <h3>持仓变化记录</h3><div id="holding-history"></div>
+              <p class="small muted">显示最近 500 条基金记录；金额变化按上次记录后的买入/赎回调整，日期间隔不满一周也会如实显示。只能按基金从最后一条起撤销。</p>
+            </section>
             <section class="section">
               <div class="section-heading">
                 <h2>最近交易</h2>
@@ -254,7 +267,8 @@
               <button id="new-account">新增账户</button>
             </div>
             <p class="muted">
-              余额 = 期初余额 + 该账户全部交易。微信、支付宝作为独立账户管理。
+              总资产＝现金＋各基金最新市值。期初余额仅填写现金；归档账户保留历史，不计入当前启用账户总资产。
+              使用上移、下移调整账户顺序；已归档账户集中在下方分组中。
             </p>
             <div id="accounts-list"></div>
           </section>
@@ -316,8 +330,9 @@
               ><label
                 >结束日期<input id="report-end" type="date" required /></label
               ><label>分类<select id="report-category"></select></label
-              ><button type="submit">更新分析</button>
+              ><label>支出口径<select id="report-scope"><option value="all">全部支出</option><option value="personal">个人开销（排除家庭支持）</option></select></label><button type="submit">更新分析</button>
             </form>
+            <p class="small muted">个人开销排除“家庭支持 / 给父母”等标记为非个人的支出。父母转入记收入；转给父母记支出。账户间转账仅用于自己的账户互转。</p>
             <div id="report-metrics" class="metrics"></div>
             <section>
               <div class="section-heading">
@@ -403,6 +418,16 @@
               <span class="pill">仅监听 127.0.0.1</span>
             </div>
             <section class="settings-row">
+              <div><h2>本机后台自动解锁</h2>
+                <p class="muted">首次输入主密码授权此 Windows 用户。之后 Workbuddy 可按需隐藏启动服务，无需打开网页；本模式持续解锁，关闭网页不会退出。网页查看仍需密码。</p>
+                <p id="machine-access-status" class="small muted"></p>
+                <label class="check"><input id="machine-logon-enabled" type="checkbox"> Windows 登录后自动启动后台账本</label>
+                <p class="small muted">启用后，在当前 Windows 用户登录时启动本地账本服务，无需打开网页。退出当前 Windows 会话或关机时服务结束。</p>
+                <p class="small warning">授权凭据由 Windows DPAPI 保护，仅存本机。控制当前 Windows 用户的程序可能访问账本。点击锁定或修改密码会撤销授权；撤销后智能体访问立即停止。</p>
+                <div class="toolbar"><button id="enable-machine-access">授权本机后台访问</button><button id="disable-machine-access" class="danger">撤销本机授权并锁定</button><button id="shutdown-service" class="danger">撤销授权并退出服务</button></div>
+              </div>
+            </section>
+            <section class="settings-row">
               <div>
                 <h2>加密备份</h2>
                 <p class="muted">
@@ -427,7 +452,7 @@
               <div>
                 <h2>Workbuddy / MCP 接入</h2>
                 <p class="muted">
-                  在本机界面解锁后，智能体才可调用工具。统计在 Python
+                  在本机界面解锁或启用本机后台授权后，智能体可调用工具。统计在 Python
                   内完成，默认不开放逐笔账单读取。
                 </p>
                 <label class="check"
@@ -478,7 +503,7 @@
               </p>
               <p class="small muted">
                 人民币单币种 · 内存 SQLite + Argon2id / AES-256-GCM · 15
-                分钟无界面操作自动锁定 · 账本上限 128 MiB
+                分钟无界面操作自动锁定（本机后台授权模式除外） · 账本上限 128 MiB
               </p>
             </section>
           </section>
@@ -501,6 +526,7 @@
           id="entry-request"
           type="hidden"
         />
+        <p class="small muted">父母转入请选择“收入 / 父母转入”；给父母的钱请选择“支出 / 家庭支持 / 给父母”。“转账”仅用于自己的账户互转。</p>
         <div class="form-grid">
           <label
             >类型<select id="entry-kind">

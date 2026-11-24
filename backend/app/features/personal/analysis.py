@@ -19,6 +19,8 @@ class MonthlyBucket(TypedDict):
     income_minor: int
     expense_minor: int
     net_minor: int
+    personal_expense_minor: int
+    non_personal_expense_minor: int
 
 
 def run_report(
@@ -28,6 +30,7 @@ def run_report(
     end: date,
     category_id: str | None = None,
     account_id: str | None = None,
+    expense_scope: str = "all",
 ) -> dict:
     """Compute locally and return only aggregates in integer minor units.
 
@@ -36,6 +39,8 @@ def run_report(
     """
     if report not in REPORTS:
         raise ValidationError("不支持的报表，请使用允许的报表名称。")
+    if expense_scope not in ("all", "personal"):
+        raise ValidationError("支出口径只能为 all 或 personal。")
     if start > end or (end - start).days > 3660:
         raise ValidationError("请选择有效的日期区间，最长十年。")
     categories = {item["id"]: item for item in repo.categories()}
@@ -45,14 +50,27 @@ def run_report(
             "income_minor": 0,
             "expense_minor": 0,
             "net_minor": 0,
+            "personal_expense_minor": 0,
+            "non_personal_expense_minor": 0,
         }
         for i in range(month_index(start), month_index(end) + 1)
     }
     expense_by_category: dict[str, int] = defaultdict(int)
     expense_by_merchant: dict[str, int] = defaultdict(int)
-    income = expense = count = 0
+    income = expense = count = personal_expense = non_personal_expense = 0
     rows = repo.analysis_rows(start, end, category_id, account_id)
     for booked, amount, category, merchant in rows:
+        included = categories.get(category, {}).get("personal_expense_included", True)
+        bucket = months[booked.strftime("%Y-%m")]
+        if amount < 0:
+            if included:
+                personal_expense -= amount
+                bucket["personal_expense_minor"] -= amount
+            else:
+                non_personal_expense -= amount
+                bucket["non_personal_expense_minor"] -= amount
+            if expense_scope == "personal" and not included:
+                continue
         count += 1
         bucket = months[booked.strftime("%Y-%m")]
         if amount < 0:
@@ -80,6 +98,10 @@ def run_report(
         "end": end.isoformat(),
         "income_minor": income,
         "expense_minor": expense,
+        "personal_expense_minor": personal_expense,
+        "non_personal_expense_minor": non_personal_expense,
+        "total_expense_minor": personal_expense + non_personal_expense,
+        "expense_scope": expense_scope,
         "net_minor": income - expense,
         "transaction_count": count,
         "monthly": list(months.values()),
@@ -89,7 +111,13 @@ def run_report(
     if report == "summary":
         summary["accounts"] = repo.accounts()
         return summary
-    base = {"report": report, "currency": "CNY", "start": start.isoformat(), "end": end.isoformat()}
+    base = {
+        "report": report,
+        "currency": "CNY",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "expense_scope": expense_scope,
+    }
     if report == "monthly":
         return {**base, "items": summary["monthly"]}
     if report == "annual":
@@ -97,9 +125,23 @@ def run_report(
         for item in months.values():
             year = item["period"][:4]
             value = years.setdefault(
-                year, {"period": year, "income_minor": 0, "expense_minor": 0, "net_minor": 0}
+                year,
+                {
+                    "period": year,
+                    "income_minor": 0,
+                    "expense_minor": 0,
+                    "net_minor": 0,
+                    "personal_expense_minor": 0,
+                    "non_personal_expense_minor": 0,
+                },
             )
-            for key in ("income_minor", "expense_minor", "net_minor"):
+            for key in (
+                "income_minor",
+                "expense_minor",
+                "net_minor",
+                "personal_expense_minor",
+                "non_personal_expense_minor",
+            ):
                 value[key] += item[key]
         return {**base, "items": list(years.values())}
     if report == "category_ranking":
@@ -116,10 +158,14 @@ def run_report(
     previous_start, previous_end = previous_year(start), previous_year(end)
     previous_expense = sum(
         -amount
-        for _, amount, _, _ in repo.analysis_rows(
+        for _, amount, category, _ in repo.analysis_rows(
             previous_start, previous_end, category_id, account_id
         )
         if amount < 0
+        and (
+            expense_scope == "all"
+            or categories.get(category, {}).get("personal_expense_included", True)
+        )
     )
     return {
         **base,

@@ -141,6 +141,110 @@ async function main() {
     await page.locator("#workspace:not([hidden])").waitFor();
     await page.locator("#summary-metrics").filter({ hasText: "8,753.00" }).waitFor();
     checks.push("lock clears sensitive UI and password unlock restores durable data");
+    // Portfolio extension: still only fictional records in this throwaway vault.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.selectOption("#dashboard-source", "since-start");
+    await page.locator("#dashboard-range-note").filter({ hasText: "2026-07-15" }).waitFor();
+    assert(await page.isDisabled("#dashboard-month"));
+    checks.push("inclusive 2026-07-15 cumulative source");
+
+    async function manageAccount(label, opening, budget = "0.00") {
+      await page.click('.nav-item[data-page="accounts"]');
+      const row = page.locator(".account-row").filter({ hasText: label });
+      await row.getByRole("button", { name: "管理", exact: true }).click();
+      await page.fill('#generic-content input[name="opening"]', opening);
+      await page.fill('#generic-content input[name="monthly-budget"]', budget);
+      await page.click('#generic-content button[type=submit]');
+      await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+      await row.getByRole("button", { name: "详情", exact: true }).click();
+      await page.locator("#main:not(.loading)").waitFor();
+      await page.locator("#portfolio-metrics").filter({ hasText: Number(opening).toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2}) }).waitFor();
+    }
+    await manageAccount("支付宝债券账户", "1000.00");
+    await page.click("#add-holding");
+    await page.fill('#generic-content input[name="name"]', "虚构债券基金甲");
+    await page.fill('#generic-content input[name="date"]', "2026-11-01");
+    await page.fill('#generic-content input[name="amount"]', "400.00");
+    await page.click('#generic-content button[type=submit]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    await page.locator("#portfolio-metrics").filter({ hasText: "1,400.00" }).waitFor();
+    checks.push("account purpose, cash-only opening balance and initial fund assets");
+
+    await page.locator('[data-holding-buy]').first().click();
+    await page.fill('#generic-content input[name="date"]', "2026-11-12");
+    await page.fill('#generic-content input[name="amount"]', "100.00");
+    await page.click('#generic-content button[type=submit]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    await page.locator("#holdings-list").filter({ hasText: "500.00" }).waitFor();
+    await page.click("#record-values");
+    await page.fill('#generic-content input[name="date"]', "2026-11-19");
+    await page.fill('#generic-content input[name^="value-"]', "520.00");
+    await page.click('#generic-content button[type=submit]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    await page.locator("#portfolio-metrics").filter({ hasText: "1,420.00" }).waitFor();
+    await page.locator("#holding-history").filter({ hasText: "+¥20.00" }).waitFor();
+    await page.screenshot({ path: path.join(output, "06-portfolio.png"), fullPage: true });
+    checks.push("fund buy and weekly absolute valuation preserve spending totals");
+
+    await manageAccount("微信零花钱账户", "300.00", "100.00");
+    await page.click("#save-allowance");
+    assert.equal(await page.inputValue('#generic-content input[name="amount"]'), "100.00");
+    await page.click('#generic-content button[type=submit]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    await page.locator("#portfolio-allowance").filter({ hasText: "已转存 ¥100.00" }).waitFor();
+    await page.locator("#portfolio-allowance").filter({ hasText: "可结余额度 ¥0.00" }).waitFor();
+    await page.selectOption("#finance-account", { label: "微信理财通账户" });
+    await page.locator("#portfolio-metrics").filter({ hasText: "100.00" }).waitFor();
+    checks.push("confirmed allowance sweep into savings with no duplicate recommendation");
+
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.screenshot({ path: path.join(output, "07-portfolio-compact.png"), fullPage: true });
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await page.click("#lock-button");
+    await page.locator("#auth:not([hidden])").waitFor();
+    assert.equal(await page.locator("#holdings-list").innerText(), "");
+    assert.equal(await page.locator("#holding-history").innerText(), "");
+    checks.push("portfolio compact layout and sensitive-data clearing on lock");
+
+    await page.fill("#credential", password);
+    await page.click("#auth-submit");
+    await page.locator("#workspace:not([hidden])").waitFor();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.click('.nav-item[data-page="accounts"]');
+    await page.locator("#accounts-list .account-row").first().waitFor();
+    const ids = await page.locator("#accounts-list > .account-row").evaluateAll(rows => rows.map(r => r.dataset.accountId));
+    assert(ids.length >= 2);
+    assert(await page.locator(`[data-move-account="${ids[0]}"][data-direction="up"]`).isDisabled());
+    await page.locator(`[data-move-account="${ids[1]}"][data-direction="up"]`).click();
+    await page.waitForFunction(id => document.querySelector("#accounts-list > .account-row")?.dataset.accountId === id, ids[1]);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.nav-item[data-page="accounts"]');
+    await page.waitForFunction(id => document.querySelector("#accounts-list > .account-row")?.dataset.accountId === id, ids[1]);
+    checks.push("account order buttons and persisted order after page reload");
+
+    await page.locator(`[data-edit-account="${ids[0]}"]`).click();
+    await page.check('#generic-content [name="archived"]');
+    await page.click('#generic-content button[type="submit"]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    const archived = page.locator("#archived-accounts");
+    assert.equal(await archived.evaluate(el => el.open), false);
+    await archived.locator("summary").click();
+    await archived.locator(`[data-account-id="${ids[0]}"]`).waitFor();
+    assert(!(await page.locator(`#accounts-list > [data-account-id="${ids[0]}"]`).count()));
+    await page.screenshot({ path: path.join(output, "08-account-archive.png"), fullPage: true });
+    await page.setViewportSize({ width: 600, height: 1000 });
+    await page.screenshot({ path: path.join(output, "09-account-archive-compact.png"), fullPage: true });
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await page.locator(`[data-edit-account="${ids[0]}"]`).click();
+    await page.uncheck('#generic-content [name="archived"]');
+    await page.click('#generic-content button[type="submit"]');
+    await page.locator("#generic-dialog").waitFor({ state: "hidden" });
+    await page.locator(`#accounts-list > [data-account-id="${ids[0]}"]`).waitFor();
+    checks.push("collapsed archive folder, account restore and compact account layout");
+    await page.click("#lock-button");
+    await page.locator("#auth:not([hidden])").waitFor();
+    assert.equal(await page.locator("#accounts-list").innerText(), "");
+
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(output, "results.json"), JSON.stringify({ passed: checks, browserErrors: errors }, null, 2));
     console.log(JSON.stringify({ passed: checks.length, checks, browserErrors: errors }));

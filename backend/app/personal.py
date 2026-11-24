@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import secrets
+import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager, suppress
@@ -12,25 +13,40 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.errors import AuthError, DomainError, ValidationError, register_exception_handlers
+from app.features.personal.browser_lifetime import BrowserLifetime
 from app.features.personal.config import resolve_vault_path
+from app.features.personal.machine_access import MachineAccess
 from app.features.personal.schemas import (
     AccountInput,
+    AccountMoveInput,
     BulkCategory,
     CategoryInput,
     Confirm,
     EntryInput,
+    HoldingInput,
     ImportInput,
     Password,
     RestoreInput,
     RuleInput,
+    SavingsTransferInput,
     TokenInput,
+    TradeInput,
     Unlock,
+    ValuationInput,
 )
 from app.features.personal.service import PersonalService
 from app.features.personal.vault import Vault
@@ -106,6 +122,8 @@ class DesktopState:
         self.last_activity = 0.0
         self.failures = 0
         self.next_unlock = 0.0
+        self.machine_access = MachineAccess(vault.path)
+        self.background_access = False
 
     def authenticated(self, request: Request) -> bool:
         supplied = request.cookies.get(COOKIE, "")
@@ -115,7 +133,11 @@ class DesktopState:
 
     def expire(self) -> None:
         with self.vault.mutex:
-            if self.vault.unlocked and time.monotonic() - self.last_activity >= IDLE_SECONDS:
+            if (
+                self.vault.unlocked
+                and not self.background_access
+                and time.monotonic() - self.last_activity >= IDLE_SECONDS
+            ):
                 self.lock()
 
     def lock(self) -> None:
@@ -145,22 +167,39 @@ class DesktopState:
                 raise
 
 
-def create_personal_app(vault_path: Path | None = None) -> FastAPI:
+def create_personal_app(
+    vault_path: Path | None = None, *, browser_lifetime: BrowserLifetime | None = None
+) -> FastAPI:
     """Build a single-process local app without starting the original plaintext datastore."""
     path = resolve_vault_path(vault_path)
     state = DesktopState(Vault(path))
+    if browser_lifetime:
+        browser_lifetime.keep_running = lambda: state.background_access
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if state.machine_access.enabled:
+            try:
+                await asyncio.to_thread(state.login, state.machine_access.load())
+                state.token = None  # Background authorization never authenticates the webpage.
+                state.background_access = True
+            except DomainError, OSError, subprocess.SubprocessError:
+                state.lock()
+
         async def auto_lock() -> None:
             while True:
                 await asyncio.sleep(10)
                 await asyncio.to_thread(state.expire)
 
         task = asyncio.create_task(auto_lock())
+        browser_task = asyncio.create_task(browser_lifetime.watch()) if browser_lifetime else None
         try:
             yield
         finally:
+            if browser_task:
+                browser_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await browser_task
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -168,6 +207,7 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="Bastide 本地账本", version="1.0.0", lifespan=lifespan)
     app.state.personal = state
+    app.state.request_exit = None
     app.add_middleware(LocalGuard)
     register_exception_handlers(app)
 
@@ -241,6 +281,66 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
     def index() -> FileResponse:
         return FileResponse(STATIC / "index.html")
 
+    @app.get("/api/window")
+    def window_config() -> dict:
+        return {"exit_on_close": browser_lifetime is not None and not state.background_access}
+
+    @app.get("/api/machine-access")
+    def machine_access_status(service: Desktop) -> dict:
+        return {"enabled": state.machine_access.enabled, "active": state.background_access}
+
+    @app.post("/api/machine-access")
+    def enable_machine_access(data: Password, service: Desktop) -> JSONResponse:
+        # Verify the password again; an existing session alone must not enroll a device.
+        with state.vault.mutex:
+            previous_token = state.token
+            state.login(data.password)
+            try:
+                state.machine_access.save(data.password)
+            except Exception:
+                state.token = previous_token
+                raise
+            state.background_access = True
+        return login_response({"enabled": True, "active": True})
+
+    @app.delete("/api/machine-access")
+    def disable_machine_access(service: Desktop) -> dict:
+        state.machine_access.revoke()
+        state.background_access = False
+        state.lock()
+        return {"enabled": False, "active": False}
+
+    @app.post("/api/shutdown")
+    def shutdown(tasks: BackgroundTasks, service: Desktop) -> dict:
+        state.machine_access.revoke()
+        state.background_access = False
+        state.lock()
+        if app.state.request_exit:
+            tasks.add_task(app.state.request_exit)
+        return {"stopped": True}
+
+    @app.websocket("/api/window/ws")
+    async def window_connection(websocket: WebSocket) -> None:
+        # LocalGuard handles HTTP only. Check WS origins separately, including locked pages.
+        host = websocket.headers.get("host", "")
+        if (
+            browser_lifetime is None
+            or browser_lifetime.stopping
+            or host.split(":")[0].lower() not in ("127.0.0.1", "localhost")
+            or websocket.headers.get("origin") != "http://" + host
+        ):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        connection = browser_lifetime.connect()
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            browser_lifetime.disconnect(connection)
+
     @app.get("/api/status")
     def status(request: Request) -> dict:
         state.expire()
@@ -266,13 +366,33 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
 
     @app.post("/api/lock")
     def lock(service: Desktop) -> dict:
+        state.machine_access.revoke()
+        state.background_access = False
         state.lock()
         return {"locked": True}
 
     @app.post("/api/password")
     def password(data: Password, service: Desktop) -> dict:
+        state.machine_access.revoke()
+        state.background_access = False
         state.vault.change_password(data.password)
         return {"ok": True}
+
+    @app.get("/api/machine-access/logon-task")
+    def logon_task_status(service: Desktop) -> dict:
+        return {"enabled": state.machine_access.logon_task_enabled()}
+
+    @app.post("/api/machine-access/logon-task")
+    def install_logon_task(service: Desktop) -> dict:
+        if not state.machine_access.enabled or not state.background_access:
+            raise ValidationError("请先完成本机后台授权。")
+        state.machine_access.install_logon_task()
+        return {"enabled": True}
+
+    @app.delete("/api/machine-access/logon-task")
+    def remove_logon_task(service: Desktop) -> dict:
+        state.machine_access.remove_logon_task()
+        return {"enabled": False}
 
     @app.get("/api/overview")
     def overview(service: Desktop, start: date, end: date) -> dict:
@@ -281,6 +401,42 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
     @app.get("/api/accounts")
     def accounts(service: Desktop) -> list[dict]:
         return service.invoke("accounts")
+
+    @app.get("/api/finance/since-start")
+    def since_start(service: Desktop) -> dict:
+        return service.since_start()
+
+    @app.post("/api/accounts/{account_id}/move")
+    def move_account(account_id: str, data: AccountMoveInput, service: Desktop) -> list[dict]:
+        return service.invoke("move_account", account_id, data.direction, write=True)
+
+    @app.get("/api/accounts/{account_id}/portfolio")
+    def portfolio(account_id: str, service: Desktop) -> dict:
+        return service.invoke("portfolio", account_id)
+
+    @app.post("/api/accounts/{account_id}/holdings")
+    def add_holding(account_id: str, data: HoldingInput, service: Desktop) -> dict:
+        return service.invoke("add_holding", account_id, data, write=True)
+
+    @app.post("/api/accounts/{account_id}/valuations")
+    def record_values(account_id: str, data: ValuationInput, service: Desktop) -> dict:
+        return service.invoke("record_values", account_id, data, write=True)
+
+    @app.post("/api/holdings/{holding_id}/trades")
+    def trade(holding_id: str, data: TradeInput, service: Desktop) -> dict:
+        return service.invoke("trade", holding_id, data, write=True)
+
+    @app.post("/api/holding-events/{event_id}/undo")
+    def undo_holding(event_id: str, service: Desktop) -> dict:
+        return service.invoke("undo_holding_event", event_id, write=True)
+
+    @app.delete("/api/holdings/{holding_id}")
+    def delete_holding(holding_id: str, service: Desktop) -> dict:
+        return service.invoke("delete_initial_holding", holding_id, write=True)
+
+    @app.post("/api/accounts/{account_id}/savings-transfers")
+    def savings_transfer(account_id: str, data: SavingsTransferInput, service: Desktop) -> dict:
+        return service.invoke("savings_transfer", account_id, data, write=True)
 
     @app.post("/api/accounts", status_code=201)
     def create_account(data: AccountInput, service: Desktop) -> dict:
@@ -382,8 +538,9 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
         report: str = "summary",
         category_id: str | None = None,
         account_id: str | None = None,
+        expense_scope: str = "all",
     ) -> dict:
-        return service.analysis(report, start, end, category_id, account_id)
+        return service.analysis(report, start, end, category_id, account_id, expense_scope)
 
     @app.post("/api/imports/preview")
     def import_preview(data: ImportInput, service: Desktop) -> dict:
@@ -444,6 +601,7 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
                         "PYTHONPATH": str(backend),
                         "BASTIDE_PERSONAL_URL": str(request.base_url).rstrip("/"),
                         "BASTIDE_PERSONAL_TOKEN": issued["token"],
+                        "BASTIDE_PERSONAL_VAULT": str(state.vault.path),
                     },
                 }
             }
@@ -459,7 +617,7 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
     def agent_catalog(service: Analysis) -> dict:
         return {
             "accounts": [
-                {"id": a["id"], "name": a["name"]}
+                {"id": a["id"], "name": a["name"], "purpose": a["purpose"]}
                 for a in service.invoke("accounts")
                 if not a["archived"]
             ],
@@ -476,8 +634,37 @@ def create_personal_app(vault_path: Path | None = None) -> FastAPI:
         report: str = "monthly",
         category_id: str | None = None,
         account_id: str | None = None,
+        expense_scope: str = "all",
     ) -> dict:
-        return service.analysis(report, start, end, category_id, account_id)
+        return service.analysis(report, start, end, category_id, account_id, expense_scope)
+
+    @app.get("/api/agent/finance/since-start")
+    def agent_since_start(service: Analysis) -> dict:
+        return service.since_start()
+
+    @app.get("/api/agent/accounts/{account_id}/portfolio")
+    def agent_portfolio(account_id: str, service: Analysis) -> dict:
+        result = service.invoke("portfolio", account_id)
+        # Holdings are aggregate positions, not individual cash-flow transactions.
+        return {key: value for key, value in result.items() if key != "events"}
+
+    @app.post("/api/agent/accounts/{account_id}/holdings")
+    def agent_add_holding(account_id: str, data: HoldingInput, service: Writer) -> dict:
+        return service.invoke("add_holding", account_id, data, write=True)
+
+    @app.post("/api/agent/accounts/{account_id}/valuations")
+    def agent_record_values(account_id: str, data: ValuationInput, service: Writer) -> dict:
+        return service.invoke("record_values", account_id, data, write=True)
+
+    @app.post("/api/agent/holdings/{holding_id}/trades")
+    def agent_trade(holding_id: str, data: TradeInput, service: Writer) -> dict:
+        return service.invoke("trade", holding_id, data, write=True)
+
+    @app.post("/api/agent/accounts/{account_id}/savings-transfers")
+    def agent_savings_transfer(
+        account_id: str, data: SavingsTransferInput, service: Writer
+    ) -> dict:
+        return service.invoke("savings_transfer", account_id, data, write=True)
 
     @app.post("/api/agent/transactions", status_code=201)
     def agent_create(data: EntryInput, service: Writer) -> dict:

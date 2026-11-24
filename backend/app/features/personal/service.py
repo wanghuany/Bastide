@@ -10,6 +10,7 @@ from app.core.errors import ValidationError
 from app.features.personal.analysis import run_report
 from app.features.personal.data_repository import DataRepository
 from app.features.personal.imports import parse_csv
+from app.features.personal.portfolio_repository import PortfolioRepository
 from app.features.personal.repository import LedgerRepository
 from app.features.personal.schemas import ImportInput
 from app.features.personal.vault import Vault
@@ -23,7 +24,7 @@ class PersonalService:
 
     def invoke(self, method: str, *args: Any, write: bool = False, **kwargs: Any) -> Any:
         with self.vault.session(write=write) as db:
-            return getattr(LedgerRepository(db), method)(*args, **kwargs)
+            return getattr(PortfolioRepository(db), method)(*args, **kwargs)
 
     def bootstrap(self) -> None:
         self.invoke("bootstrap", write=True)
@@ -35,9 +36,12 @@ class PersonalService:
         end: date,
         category_id: str | None = None,
         account_id: str | None = None,
+        expense_scope: str = "all",
     ) -> dict:
         with self.vault.session() as db:
-            return run_report(LedgerRepository(db), report, start, end, category_id, account_id)
+            return run_report(
+                LedgerRepository(db), report, start, end, category_id, account_id, expense_scope
+            )
 
     def overview(self, start: date, end: date) -> dict:
         with self.vault.session() as db:
@@ -47,6 +51,10 @@ class PersonalService:
                 "categories": repo.categories(),
                 "recent": repo.entries(start=start, end=end, page_size=8)["items"],
             }
+
+    def since_start(self) -> dict:
+        """All cash-flow history from the requested inclusive accounting baseline."""
+        return self.analysis("summary", date(2026, 7, 15), date.today())
 
     def preview_import(self, data: ImportInput) -> dict:
         try:
@@ -66,4 +74,7 @@ class PersonalService:
     def export(self) -> dict:
         """Explicit desktop-only plaintext export."""
         with self.vault.session() as db:
-            return DataRepository(db).export()
+            return {
+                **DataRepository(db).export(),
+                "portfolio": PortfolioRepository(db).portfolio_export(),
+            }

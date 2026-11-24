@@ -179,6 +179,27 @@ erDiagram
         bool consumed
         text user_id FK
     }
+    personal_holding_events {
+        text id PK
+        text holding_id FK
+        text kind
+        date booked_date
+        bigint previous_value_minor
+        bigint value_minor
+        bigint gain_minor
+        bigint cash_amount_minor
+        text transaction_id FK "nullable"
+        bool undone
+        datetime created_at
+    }
+    personal_holdings {
+        text id PK
+        text account_id FK
+        text name
+        date opening_date
+        bigint opening_value_minor
+        bigint current_value_minor
+    }
     personal_settings {
         text key PK
         json value
@@ -335,6 +356,9 @@ erDiagram
     users ||--o{ mortgages : "user_id"
     users ||--o{ personal_actions : "user_id"
     users ||--o{ personal_drafts : "user_id"
+    personal_holdings ||--o{ personal_holding_events : "holding_id"
+    transactions |o--o{ personal_holding_events : "transaction_id"
+    accounts ||--o{ personal_holdings : "account_id"
     users ||--o{ personal_settings : "user_id"
     users ||--o{ properties : "user_id"
     accounts ||--o{ recurring_merchant_aliases : "account_id"
@@ -388,6 +412,10 @@ erDiagram
 
 - check `kind IN ('mortgage', 'works', 'consumer', 'auto')`
 - `property_id` → `properties` on delete set null
+
+### `personal_holdings`
+
+- unique `(account_id, name)`
 
 ### `recurring_merchant_aliases`
 

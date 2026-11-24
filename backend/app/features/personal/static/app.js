@@ -174,12 +174,12 @@ function metric(label, value, caption, klass = "") {
   return `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value ${klass}">${value}</div><div class="metric-caption">${esc(caption)}</div></div>`;
 }
 function renderMetrics(id, summary) {
-  const total = (summary.accounts || state.accounts).reduce(
+  const total = (summary.accounts || state.accounts).filter((a) => !a.archived).reduce(
     (s, a) => s + (a.balance_minor || 0),
     0,
   );
   $(id).innerHTML =
-    metric("账户总资产", money(total), "全部账户 · 包含期初余额") +
+    metric("账户总资产", money(total), "启用账户 · 现金＋最新基金市值") +
     metric(
       "区间收入",
       money(summary.income_minor),
@@ -187,14 +187,19 @@ function renderMetrics(id, summary) {
       "positive",
     ) +
     metric(
-      "区间支出",
+      summary.expense_scope === "personal" ? "个人口径支出" : "区间总支出",
       money(summary.expense_minor),
       `${summary.transaction_count} 笔非转账交易`,
     ) +
     metric(
-      "区间结余",
+      "个人开销",
+      money(summary.personal_expense_minor),
+      `不含家庭支持等非个人支出 ${money(summary.non_personal_expense_minor)}`,
+    ) +
+    metric(
+      summary.expense_scope === "personal" ? "个人口径收支差额" : "区间结余",
       money(summary.net_minor),
-      "收入 − 支出",
+      summary.expense_scope === "personal" ? "收入 − 个人开销；不代表实际结余" : "收入 − 全部支出",
       summary.net_minor >= 0 ? "positive" : "negative",
     );
 }
@@ -267,7 +272,8 @@ function transactionTable(rows, actions = false) {
   return `<div class="table-scroll"><table><thead><tr><th>日期</th><th>交易 / 商家</th><th>分类</th><th>账户</th><th class="num">金额</th>${actions ? '<th class="num">操作</th>' : ""}</tr></thead><tbody>${rows
     .map((r) => {
       const transfer = r.categorization_source === "transfer";
-      const category = transfer ? "账户间转账" : categoryName(r.category_id);
+      const investment = r.categorization_source === "investment";
+      const category = investment ? "基金买入 / 赎回（非消费）" : transfer ? "账户间转账" : categoryName(r.category_id);
       const account = state.accounts.find((a) => a.id === r.account_id);
       return `<tr><td class="muted">${esc(r.booked_date)}</td><td><div class="transaction-label">${esc(r.merchant || r.description_clean || "未填写商家")}</div>${r.memo ? `<div class="transaction-note" title="${esc(r.memo)}">${esc(r.memo)}</div>` : ""}</td><td><span class="badge ${!r.category_id && !transfer ? "unclassified" : ""}">${esc(category)}</span></td><td class="muted">${esc(account?.name || "未知账户")}</td><td class="num ${transfer ? "" : r.amount_minor > 0 ? "positive" : "negative"}">${esc(money(r.amount_minor, true))}</td>${actions ? `<td class="num"><button class="ghost" data-edit-entry="${esc(r.id)}">编辑</button><button class="ghost danger" data-delete-entry="${esc(r.id)}">删除</button></td>` : ""}</tr>`;
     })
@@ -295,6 +301,12 @@ async function showAuth() {
     )
     .forEach((x) => (x.innerHTML = ""));
   $("agent-config-text").value = "";
+  currentPortfolio = null;
+  $("portfolio-metrics").innerHTML = "";
+  $("holdings-list").innerHTML = "";
+  $("holding-history").innerHTML = "";
+  $("portfolio-allowance").textContent = "";
+  $("finance-account").innerHTML = "";
   $("agent-config").hidden = true;
   $("generic-content").innerHTML = "";
   $("entry-form").reset();
@@ -350,20 +362,24 @@ async function navigate(page) {
 const loaders = {
   async dashboard() {
     await refreshCatalog();
-    const range = monthRange($("dashboard-month").value);
+    const cumulative = $("dashboard-source").value === "since-start";
+    $("dashboard-month").disabled = cumulative;
+    const range = cumulative ? { start: "2026-07-15", end: today() } : monthRange($("dashboard-month").value);
     const selected = new Date(`${range.start}T12:00:00`);
     selected.setMonth(selected.getMonth() - 5);
     const start = `${selected.getFullYear()}-${String(selected.getMonth() + 1).padStart(2, "0")}-01`;
     const [overview, trend] = await Promise.all([
       api(`/api/overview?${new URLSearchParams(range)}`),
       api(
-        `/api/analysis?${new URLSearchParams({ start, end: range.end, report: "monthly" })}`,
+        `/api/analysis?${new URLSearchParams({ start: cumulative ? range.start : start, end: range.end, report: "monthly" })}`,
       ),
     ]);
     renderMetrics("summary-metrics", overview.summary);
+    $("dashboard-range-note").textContent = `${range.start} 至 ${range.end}（含起止日）；包含归档账户的历史收支，排除自己账户间转账及基金买卖/估值变化。资产显示当前值。`;
     chart("dashboard-chart", trend.items);
     ranks("category-chart", overview.summary.categories);
     $("recent-transactions").innerHTML = transactionTable(overview.recent);
+    await loadPortfolio();
   },
   async transactions() {
     await refreshCatalog();
@@ -393,14 +409,18 @@ const loaders = {
       `<button data-pagination="-1"${state.pageNumber <= 1 ? " disabled" : ""}>上一页</button><span>${state.pageNumber} / ${pages}</span><button data-pagination="1"${state.pageNumber >= pages ? " disabled" : ""}>下一页</button>`;
   },
   async accounts() {
+    const archiveOpen = $("archived-accounts")?.open || false;
     await refreshCatalog();
-    $("accounts-list").innerHTML =
-      state.accounts
+    const renderGroup = (accounts) => accounts
         .map(
-          (a) =>
-            `<div class="account-row"><div class="account-main"><div class="account-monogram">${esc(a.name.slice(0, 1))}</div><div><div class="account-name">${esc(a.name)} ${a.archived ? '<span class="badge">已归档</span>' : ""}</div><div class="account-subtitle">期初余额 ${esc(money(a.opening_balance_minor))} · ${esc(a.currency)}</div></div></div><div class="toolbar"><strong class="account-balance ${a.balance_minor < 0 ? "negative" : ""}">${esc(money(a.balance_minor))}</strong><button class="ghost" data-edit-account="${esc(a.id)}">管理</button></div></div>`,
+          (a, index) =>
+            `<div class="account-row" data-account-id="${esc(a.id)}"><div class="account-main"><div class="account-monogram">${esc(a.name.slice(0, 1))}</div><div><div class="account-name">${esc(a.name)} ${a.archived ? '<span class="badge">已归档</span>' : ""}</div><div class="account-subtitle">现金 ${esc(money(a.cash_balance_minor))} · 基金 ${esc(money(a.holdings_value_minor))}</div></div></div><div class="toolbar"><strong class="account-balance ${a.balance_minor < 0 ? "negative" : ""}">${esc(money(a.balance_minor))}</strong><button class="ghost" data-move-account="${esc(a.id)}" data-direction="up" aria-label="上移${esc(a.name)}"${index === 0 ? " disabled" : ""}>上移</button><button class="ghost" data-move-account="${esc(a.id)}" data-direction="down" aria-label="下移${esc(a.name)}"${index === accounts.length - 1 ? " disabled" : ""}>下移</button><button class="ghost" data-view-portfolio="${esc(a.id)}">详情</button><button class="ghost" data-edit-account="${esc(a.id)}">管理</button></div></div>`,
         )
-        .join("") || empty();
+        .join("");
+    const active = state.accounts.filter((a) => !a.archived);
+    const archived = state.accounts.filter((a) => a.archived);
+    $("accounts-list").innerHTML = `<h2 class="section">使用中（${active.length}）</h2>${renderGroup(active) || empty("暂无使用中的账户", "可新增账户，或展开下方归档分组恢复已有账户。")}
+      <details id="archived-accounts" class="account-archive"${archiveOpen ? " open" : ""}><summary>已归档账户（${archived.length}）</summary><p class="muted">归档仅整理显示，历史收支保留。点击管理并取消归档即可恢复。</p>${renderGroup(archived) || empty("暂无归档账户", "账户归档后会集中显示在这里。")}</details>`;
   },
   async categories() {
     await refreshCatalog();
@@ -448,6 +468,7 @@ const loaders = {
     const params = {
       start: $("report-start").value,
       end: $("report-end").value,
+      expense_scope: $("report-scope").value,
     };
     if ($("report-category").value)
       params.category_id = $("report-category").value;
@@ -494,10 +515,17 @@ const loaders = {
         "新增、修改、删除和分类整理都会留下可撤销的操作记录。",
       );
   },
-  async settings() {},
+  async settings() {
+    const access = await api("/api/machine-access");
+    const logonTask = await api("/api/machine-access/logon-task");
+    $("machine-access-status").textContent = access.active ? "已授权：本机后台访问已启用" : "未启用本机后台访问";
+    $("disable-machine-access").disabled = !access.enabled;
+    $("machine-logon-enabled").checked = logonTask.enabled;
+    $("machine-logon-enabled").disabled = !access.active;
+  },
 };
 function categoryRow(c) {
-  return `<div class="category-row ${c.parent_id ? "child" : ""}"><div class="category-name"><span class="category-dot" style="background:var(--${/^cat[0-6]$/.test(c.color) ? c.color : "positive"})"></span>${esc(c.name)}</div><div><button class="ghost" data-edit-category="${esc(c.id)}">编辑</button><button class="ghost danger" data-delete-category="${esc(c.id)}">删除</button></div></div>`;
+  return `<div class="category-row ${c.parent_id ? "child" : ""}"><div class="category-name"><span class="category-dot" style="background:var(--${/^cat[0-6]$/.test(c.color) ? c.color : "positive"})"></span>${esc(c.name)}${c.kind === "expense" && c.personal_expense_included === false ? ' <span class="badge">不计个人开销</span>' : ""}</div><div><button class="ghost" data-edit-category="${esc(c.id)}">编辑</button><button class="ghost danger" data-delete-category="${esc(c.id)}">删除</button></div></div>`;
 }
 
 function generic(title, html, onSubmit) {
@@ -527,11 +555,17 @@ function accountDialog(id) {
           name: data.get("name"),
           opening_balance_minor: toMinor(data.get("opening"), true),
           archived: data.get("archived") === "on",
+          purpose: data.get("purpose"),
+          monthly_allowance_minor: toMinor(data.get("monthly-budget"), true),
         }),
       });
       toast("账户已保存");
     },
   );
+  const form = $("generic-content").querySelector("form");
+  const profile = document.createElement("div");
+  profile.innerHTML = `<label>账户用途<select name="purpose">${Object.entries(accountPurposes).map(([key, label]) => option(key, label, a?.purpose || "generic")).join("")}</select></label><label>每月零花钱额度（元，0 表示暂不设定）<input name="monthly-budget" inputmode="decimal" value="${((a?.monthly_allowance_minor || 0) / 100).toFixed(2)}" required></label><p class="small muted">期初余额仅为现金；已有基金在账户详情登记期初持仓，不要重复计入现金。</p>`;
+  form.querySelector(".dialog-actions").before(profile);
 }
 function categoryDialog(id) {
   const c = state.categories.find((x) => x.id === id);
@@ -545,6 +579,7 @@ function categoryDialog(id) {
           name: data.get("name"),
           kind: data.get("kind"),
           parent_id: data.get("parent") || null,
+          include_in_personal_expense: data.get("personal") === "on",
         }),
       });
       toast("分类已保存");
@@ -562,6 +597,9 @@ function categoryDialog(id) {
         .join("");
   };
   $("category-kind").addEventListener("change", fill);
+  const scopeLabel = document.createElement("label");
+  scopeLabel.innerHTML = `<span><input type="checkbox" name="personal" ${c?.include_in_personal_expense !== false ? "checked" : ""}> 计入个人开销（仅支出；父分类排除时子分类也排除）</span>`;
+  $("category-parent").closest("label").after(scopeLabel);
   fill();
 }
 function ruleDialog() {
@@ -832,8 +870,27 @@ document.addEventListener("click", async (event) => {
       }
       return;
     }
+    if (button.dataset.moveAccount) {
+      button.disabled = true;
+      try {
+        await post(`/api/accounts/${encodeURIComponent(button.dataset.moveAccount)}/move`, {
+          direction: button.dataset.direction,
+        });
+        await loaders.accounts();
+        const moved = document.querySelector(`[data-move-account="${CSS.escape(button.dataset.moveAccount)}"][data-direction="${button.dataset.direction}"]`);
+        if (moved && !moved.disabled) moved.focus();
+      } finally { button.disabled = false; }
+      return;
+    }
     if (button.dataset.editAccount) {
       accountDialog(button.dataset.editAccount);
+      return;
+    }
+    if (button.dataset.viewPortfolio) {
+      await navigate("dashboard");
+      $("finance-account").value = button.dataset.viewPortfolio;
+      await loadPortfolio();
+      $("finance-portfolio-section").scrollIntoView({ behavior: "smooth" });
       return;
     }
     if (button.dataset.editCategory) {
@@ -930,6 +987,24 @@ document.addEventListener("click", async (event) => {
         toast(
           "填写模板时：kind 使用 expense / income，金额使用元，日期使用 YYYY-MM-DD",
         );
+        break;
+      case "enable-machine-access":
+        generic("授权本机后台访问", '<form><p>授权后后台持续解锁，Workbuddy 可隐藏启动账本服务。请输入主密码确认。</p><label>主密码<input name="password" type="password" required minlength="10" autocomplete="current-password"></label><div class="dialog-actions"><button type="submit" class="primary">确认授权</button></div></form>', async (data) => {
+          await post("/api/machine-access", { password: data.get("password") });
+          toast("本机后台访问已授权；Workbuddy 可在网页关闭后继续使用");
+        });
+        break;
+      case "shutdown-service":
+        if (confirm("撤销本机自动解锁并退出服务？Workbuddy 将停止访问，下次需手动启动并解锁。")) {
+          await post("/api/shutdown");
+          await showAuth();
+          toast("本机授权已撤销，服务正在退出；可关闭此页面");
+        }
+        break;
+      case "disable-machine-access":
+        await api("/api/machine-access", { method: "DELETE" });
+        await showAuth();
+        toast("本机授权已撤销，账本已锁定");
         break;
       case "change-password":
         generic(
@@ -1032,4 +1107,37 @@ async function init() {
 init().catch((error) => {
   $("auth-title").textContent = "无法连接本地服务";
   $("auth-error").textContent = error.message;
+});
+
+$("dashboard-source").addEventListener("change", () => navigate("dashboard").catch((e) => toast(e.message)));
+$("finance-account").addEventListener("change", () => loadPortfolio().catch((e) => toast(e.message)));
+$("add-holding").addEventListener("click", addHoldingDialog);
+$("record-values").addEventListener("click", weeklyValuesDialog);
+$("save-allowance").addEventListener("click", allowanceSavingsDialog);
+$("machine-logon-enabled").addEventListener("change", async (event) => {
+  const checkbox = event.currentTarget;
+  checkbox.disabled = true;
+  try {
+    await api("/api/machine-access/logon-task", {
+      method: checkbox.checked ? "POST" : "DELETE",
+    });
+    toast(checkbox.checked ? "已启用 Windows 登录后自动启动" : "已关闭 Windows 登录自动启动");
+  } catch (error) {
+    checkbox.checked = !checkbox.checked;
+    toast(error.message);
+  } finally {
+    checkbox.disabled = false;
+  }
+});
+document.addEventListener("click", async (e) => {
+  const button = e.target.closest("button");
+  if (!button) return;
+  try {
+    if (button.dataset.holdingBuy) holdingTradeDialog(button.dataset.holdingBuy, "buy");
+    if (button.dataset.holdingSell) holdingTradeDialog(button.dataset.holdingSell, "sell");
+    if (button.dataset.holdingUndo && confirm("确认撤销这条基金记录？现金和持仓将同步恢复。")) {
+      await post(`/api/holding-events/${button.dataset.holdingUndo}/undo`, {});
+      await navigate("dashboard");
+    }
+  } catch (error) { toast(error.message); }
 });

@@ -79,4 +79,5 @@ Thumbs.db
 *.bfin.*
 workbuddy.local.json
 personal.local.json
+*.dpapi
 .ruff_cache/
